@@ -56,12 +56,16 @@ The gateway uses the native Gemini API and preserves one input to one vector. Hi
 - Each normal outbound attempt contains at most **28,000 actual embedding tokens** and **100 inputs**. Each input is counted with `countTokens` and must fit **8,192 tokens**.
 - Normal attempts are separated by a conservative 60-second cooldown after completion. Small batches are allowed; a full 28K batch is not guaranteed.
 - Query embeddings are immediate. An explicit five-minute bootstrap lease permits the first successful single-input startup probe.
+- Stored-passage embeddings use the enabled Google API-key accounts in pi-multiprovider's `~/.local/share/pi/agent/multiprovider-auth.json`, in file order. The key in `credentials.env` is reserved for queries and the startup probe, so recall keeps working when stored passages exhaust their keys. Queries fall back to the pool keys when the reserved key is capped. If the pool file is missing or unreadable, every call uses the reserved key.
+- On HTTP 429 the gateway reads the quota ID and retry delay from Google's error body, stops using that key until the reported time, and tries the next key. When every eligible key is capped it answers 429 without calling Google. Caps survive a gateway restart. Without a retry delay the block is one hour for a per-day quota and one minute otherwise. Other upstream errors do not change keys.
 - Graceful session shutdown requests a final drain. A `202` response means accepted, not completed. Drains bypass the normal cadence for at most five minutes while checking pending Hindsight operations and a quiet period.
 - Observed passage failures make a drain fail rather than report false success. Drain completion means the queue and watched jobs are idle, not that every earlier extraction succeeded.
 
 The last dispatch timestamp is persisted before sending. Failed attempts consume cadence, abandoned unsent work is removed, and responses retain input order across batches. Oversized inputs fail instead of being truncated or split into extra vectors. Upstream calls have a five-minute timeout. Queued synchronous requests are not durable across gateway crashes; accepted Hindsight jobs remain subject to Hindsight's own persistence and timeout behavior. Sustained backlog can still cause failures.
 
-These controls do not enforce a daily Google quota. Queries and drains bypass normal cadence, and other applications can share project limits.
+The gateway does not count usage against a daily Google quota; it reacts when Google reports that one is exhausted. Queries and drains bypass normal cadence, and other applications can share project limits.
+
+`GET /health` lists each account label in `keys` with `blockedUntil`, the epoch time in milliseconds at which a capped key is used again. Logs have one line per upstream embedding attempt (`passage_batch` or `query_embed`) with the account label, HTTP status, input count and, on 429, `quotaId` and `blockedUntil`. Token counting is logged only when it fails. Logs contain no memory text or credentials. Capped accounts are stored by account ID, not key, in `~/.local/state/pi-hindsight-embedding-batcher/quota.json`.
 
 ### Configure the services
 
@@ -69,11 +73,13 @@ The templates in `deploy/` assume a separate stable gateway checkout at `~/.loca
 
 Keep credentials outside the repository in private files under `~/.config/hindsight`:
 
-- `credentials.env`: `HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY`, the real Google embedding key.
+- `credentials.env`: `HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY`, the real Google key reserved for queries. It serves every call when no pool file is readable.
 - `embedding-gateway.env`: three distinct random local values, `EMBEDDING_GATEWAY_TOKEN`, `EMBEDDING_GATEWAY_QUERY_TOKEN`, and `EMBEDDING_GATEWAY_PASSAGE_TOKEN`.
 - In `embedding-gateway.env`, set `HINDSIGHT_API_QUERY_EMBEDDINGS_GEMINI_API_KEY` to the local query token and `HINDSIGHT_API_PASSAGE_EMBEDDINGS_GEMINI_API_KEY` to the local passage token.
 
 Make the directory private and set both files to mode `0600`. Never use a real Google key as a local gateway token. The gateway replaces local tokens with the real key only for requests to Google's official endpoint.
+
+The pool file is optional and belongs to pi-multiprovider. The gateway reads it at most once per minute, never writes it, and does not share cooldown state with Pi.
 
 Configure Hindsight's Google embeddings for `gemini-embedding-2` and output dimensionality `768`. Install the gateway unit under your user systemd directory and the drop-in under `hindsight.service.d/`. The drop-in redirects Hindsight's native Google SDK to the loopback gateway and requests its startup bootstrap lease. Back up existing configuration and data first. Reload the user systemd manager, start the gateway, then restart Hindsight. Keep both services bound to loopback.
 

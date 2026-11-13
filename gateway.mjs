@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { TokenBatchQueue, MAX_INPUT_TOKENS } from './batching.mjs';
+import { parsePool, quotaFailure } from './keys.mjs';
 
 const MODEL = 'models/gemini-embedding-2';
 const PREFIX = `/v1beta/${MODEL}:`;
@@ -76,7 +77,7 @@ export async function hasPendingOperations({ signal, fetchStatus = fetch } = {})
 }
 
 export async function createGateway({
-  googleKey, controlToken, queryToken, passageToken, stateDir,
+  googleKey, controlToken, queryToken, passageToken, stateDir, poolPath,
   now = () => performance.timeOrigin + performance.now(), fetchGoogle = fetch, hasPending = hasPendingOperations,
   background = true, log = console.log,
 }) {
@@ -95,21 +96,78 @@ export async function createGateway({
     await writeFile(temporary, JSON.stringify({ lastDispatch: timestamp }) + '\n', { mode: 0o600, flush: true });
     await rename(temporary, statePath);
   };
-  const google = async (operation, body) => {
-    const response = await fetchGoogle(GOOGLE + PREFIX + operation, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': googleKey },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(300000), redirect: 'error',
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new HttpError(response.status === 429 ? 429 : 502, `Google request failed (HTTP ${response.status})`);
+  // A daily cap must outlive a restart, or each restart spends requests rediscovering it.
+  const quotaPath = join(stateDir, 'quota.json');
+  const blocked = new Map();
+  try {
+    for (const [id, until] of Object.entries(JSON.parse(await readFile(quotaPath, 'utf8')).blocked)) {
+      if (Number.isFinite(until)) blocked.set(id, until);
     }
-    return response.json();
+  } catch { /* A missing or damaged cache costs one rejected request per capped key. */ }
+  let saving = Promise.resolve();
+  const saveBlocked = () => saving = saving.then(async () => {
+    const temporary = quotaPath + '.tmp';
+    const current = [...blocked].filter(([, until]) => until > now());
+    await writeFile(temporary, JSON.stringify({ blocked: Object.fromEntries(current) }) + '\n', { mode: 0o600 });
+    await rename(temporary, quotaPath);
+  }).catch(() => log(JSON.stringify({ event: 'quota_state_save_failed' })));
+  const reserved = { id: 'reserved', label: 'reserved', key: googleKey };
+  let pool = [], poolRead = -Infinity, poolError = false;
+  const candidates = async role => {
+    if (poolPath && now() - poolRead >= 60000) {
+      poolRead = now();
+      try {
+        pool = parsePool(await readFile(poolPath, 'utf8')).filter(a => a.key !== googleKey);
+        poolError = false;
+      } catch {
+        pool = [];
+        if (!poolError) log(JSON.stringify({ event: 'pool_unavailable' }));
+        poolError = true;
+      }
+    }
+    // The reserved key serves queries first. Stored text uses it only when there is no pool.
+    return role === 'query' || !pool.length ? [reserved, ...pool] : pool;
+  };
+  await candidates('query');
+  const google = async (operation, body, role, entry) => {
+    let until = Infinity;
+    for (const account of await candidates(role)) {
+      const blockedUntil = blocked.get(account.id) ?? 0;
+      if (blockedUntil > now()) { until = Math.min(until, blockedUntil); continue; }
+      const record = { ...entry, key: account.label };
+      let response;
+      try {
+        response = await fetchGoogle(GOOGLE + PREFIX + operation, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': account.key },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(300000), redirect: 'error',
+        });
+      } catch (error) {
+        log(JSON.stringify({ ...record, at: now(), status: 'no_response' }));
+        throw error;
+      }
+      record.at = now(); record.status = response.status;
+      if (response.ok) {
+        if (operation !== 'countTokens') log(JSON.stringify(record));
+        return response.json();
+      }
+      if (response.status !== 429) {
+        await response.body?.cancel();
+        log(JSON.stringify(record));
+        throw new HttpError(502, `Google request failed (HTTP ${response.status})`);
+      }
+      const { quotaId, blockMs } = quotaFailure(await response.text().catch(() => ''));
+      blocked.set(account.id, now() + blockMs);
+      until = Math.min(until, now() + blockMs);
+      log(JSON.stringify({ ...record, quotaId, blockedUntil: now() + blockMs }));
+      await saveBlocked();
+    }
+    throw new HttpError(429, `Google embedding quota exhausted until ${new Date(until).toISOString()}`);
   };
   const embed = async (items, mode = 'normal') => {
     const tokens = items.reduce((n, x) => n + x.tokens, 0);
-    log(JSON.stringify({ event: 'passage_batch', at: now(), mode, tokens, inputs: items.length }));
-    const data = await google('batchEmbedContents', { requests: items.map(x => x.request) });
+    // Hindsight's startup probe must not depend on the stored-text quota.
+    const data = await google('batchEmbedContents', { requests: items.map(x => x.request) },
+      mode === 'bootstrap' ? 'query' : 'passage', { event: 'passage_batch', mode, tokens, inputs: items.length });
     if (!Array.isArray(data.embeddings) || data.embeddings.length !== items.length || data.embeddings.some(e =>
       !Array.isArray(e.values) || e.values.length !== 768 || e.values.some(v => !Number.isFinite(v)))) {
       throw new HttpError(502, 'Google embedding response count or dimensions mismatch');
@@ -128,6 +186,7 @@ export async function createGateway({
     processingRequests, lastDispatch: queue.lastDispatch,
     draining, drainStatus, drainError, drainFailedRequests, bootstrap: now() < bootstrapUntil,
     intervalMs: 60000, maxBatchTokens: 28000,
+    keys: [reserved, ...pool].map(a => ({ key: a.label, blockedUntil: blocked.get(a.id) > now() ? blocked.get(a.id) : null })),
   });
   const expireDrain = () => {
     if (draining && now() >= drainDeadline) {
@@ -196,17 +255,19 @@ export async function createGateway({
       if (!Array.isArray(requests) || requests.length < 1 || requests.length > 1000) throw new HttpError(400, 'Expected 1–1000 embedding inputs');
       const inputs = requests.map(validateRequest);
       if (isQuery) {
-        const response = await google(batched ? 'batchEmbedContents' : 'embedContent', batched ? { requests: inputs } : inputs[0]);
+        const response = await google(batched ? 'batchEmbedContents' : 'embedContent', batched ? { requests: inputs } : inputs[0],
+          'query', { event: 'query_embed', inputs: inputs.length });
         send(res, 200, response); return;
       }
       processingRequests++; lastArrival = now();
+      const role = now() < bootstrapUntil && !bootstrapBusy && inputs.length === 1 ? 'query' : 'passage';
       try {
         const counted = [];
         // Counting calls are not embedding calls. They never spend a dispatch slot.
         for (let i = 0; i < inputs.length; i += 4) {
           controller.signal.throwIfAborted();
           const slice = await Promise.all(inputs.slice(i, i + 4).map(async request => {
-            const result = await google('countTokens', { contents: [request.content] });
+            const result = await google('countTokens', { contents: [request.content] }, role, { event: 'count_tokens' });
             if (!Number.isSafeInteger(result.totalTokens) || result.totalTokens < 0) throw new HttpError(502, 'Invalid Google token count');
             if (result.totalTokens > MAX_INPUT_TOKENS) throw new HttpError(422, 'Individual embedding input exceeds 8192 Gemini tokens');
             return { request, tokens: result.totalTokens };
@@ -243,6 +304,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     queryToken: process.env.EMBEDDING_GATEWAY_QUERY_TOKEN,
     passageToken: process.env.EMBEDDING_GATEWAY_PASSAGE_TOKEN,
     stateDir: join(homedir(), '.local/state/pi-hindsight-embedding-batcher'),
+    poolPath: join(homedir(), '.local/share/pi/agent/multiprovider-auth.json'),
   });
   gateway.server.listen(8890, '127.0.0.1');
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { gateway.close(); process.exit(0); });
