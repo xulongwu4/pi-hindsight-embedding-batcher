@@ -7,12 +7,12 @@ import { execFileSync } from 'node:child_process';
 
 const root = new URL('.', import.meta.url);
 
-test('package exposes one composite extension instead of only the drain hook', () => {
+test('package exposes one composite extension', () => {
   const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
   assert.deepEqual(pkg.pi.extensions, ['./index.ts']);
 });
 
-test('package entry preserves prompt refresh, upstream hooks, filtering and drain order', (t) => {
+test('package entry preserves prompt refresh, upstream hooks and filtering', (t) => {
   const home = mkdtempSync(join(tmpdir(), 'hindsight-package-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const installed = join(home, '.hindsight/coding-agents');
@@ -36,9 +36,6 @@ test('package entry preserves prompt refresh, upstream hooks, filtering and drai
       pi.on('session_shutdown', () => globalThis.order.push('upstream-shutdown'));
     }
   `);
-  mkdirSync(join(home, '.config/hindsight'), { recursive: true });
-  writeFileSync(join(home, '.config/hindsight/embedding-gateway.env'),
-    'EMBEDDING_GATEWAY_TOKEN=test-control-token\n', { mode: 0o600 });
   const script = `
     import assert from 'node:assert/strict';
     import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -55,12 +52,6 @@ test('package entry preserves prompt refresh, upstream hooks, filtering and drai
       events: { on(name) { subscriptions.push(name); return () => {}; } },
     };
     globalThis.fetch = async (url, options) => {
-      if (url === 'http://127.0.0.1:8890/control/drain') {
-        assert.equal(options.headers.Authorization, 'Bearer test-control-token');
-        assert.equal(globalThis.order.at(-1), 'upstream-shutdown');
-        globalThis.order.push('drain');
-        return new Response(JSON.stringify({ draining: true }), { status: 202 });
-      }
       assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/decisions');
       assert.equal(options.headers['x-goog-api-key'], 'test-google-key');
       globalThis.order.push('classify');
@@ -73,7 +64,7 @@ test('package entry preserves prompt refresh, upstream hooks, filtering and drai
     assert.deepEqual(subscriptions, ['pi-multiprovider:service']);
     assert.equal(handlers.get('before_agent_start').length, 2);
     assert.equal(handlers.get('agent_end').length, 1);
-    assert.equal(handlers.get('session_shutdown').length, 2);
+    assert.equal(handlers.get('session_shutdown').length, 1);
     const ctx = {
       hasUI: false, sessionManager: { getSessionId: () => 'package-test', getBranch: () => [] },
       modelRegistry: { async getApiKeyForProvider(provider) { assert.equal(provider, 'google'); return 'test-google-key'; } },
@@ -92,7 +83,7 @@ test('package entry preserves prompt refresh, upstream hooks, filtering and drai
     for (const hook of handlers.get('agent_end')) await hook({}, ctx);
     for (const hook of handlers.get('session_shutdown')) await hook({}, ctx);
     assert.deepEqual(globalThis.order, ['upstream-prompt', 'classify', 'upstream-prompt', 'classify',
-      'retain', 'upstream-shutdown', 'drain']);
+      'retain', 'upstream-shutdown']);
   `;
   const env = { ...process.env, HOME: home, TMPDIR: home };
   delete env.HINDSIGHT_DISABLE_HOOKS;
