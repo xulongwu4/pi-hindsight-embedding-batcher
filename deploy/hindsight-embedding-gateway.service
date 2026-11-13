@@ -1,0 +1,20 @@
+[Unit]
+Description=Hindsight Gemini embedding rate batcher
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/pi-hindsight-embedding-batcher
+EnvironmentFile=%h/.config/hindsight/credentials.env
+EnvironmentFile=%h/.config/hindsight/embedding-gateway.env
+ExecStart=/usr/bin/node %h/.local/share/pi-hindsight-embedding-batcher/gateway.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

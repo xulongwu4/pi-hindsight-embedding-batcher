@@ -1,0 +1,14 @@
+node_modules/
+.env
+*.env
+*.key
+*.pem
+*.log
+*.sqlite*
+*.dump
+auth.json
+credentials.json
+backups/
+state/
+coverage/
+.DS_Store
