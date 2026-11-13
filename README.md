@@ -21,7 +21,7 @@ pi install git:github.com/xulongwu4/pi-hindsight-embedding-batcher
 This adds the Git source to Pi's `packages` settings. The package exposes one entrypoint, `index.ts`, which registers:
 
 1. `prompt-injection.ts`: refresh the per-prompt retrieval cache.
-2. `gated-hindsight.ts`: load Hindsight's original extension and filter automatic injection.
+2. `gated-hindsight.ts`: load Hindsight's original extension, filter automatic injection, and space out session retains.
 
 Remove any direct registration of `~/.hindsight/coding-agents/dist/pi.js` or these individual component files. Registering them alongside the package can duplicate hooks and bypass filtering. Preserve unrelated extensions. Run `/reload` or restart Pi after changing registration.
 
@@ -31,11 +31,17 @@ Installing this package does **not** install the Hindsight API, its coding-agent
 
 Every nonempty `before_agent_start` prompt can trigger fresh upstream retrieval. The cache adapter removes only `reflectAnswer` and `reflectAttempts`; it preserves page rosters, turn counts, unknown fields, and cold-bank behavior. It rejects unsafe paths and malformed cache data. Retrieval still runs through the original Hindsight extension.
 
-The wrapper filters memory before Pi persists it. Hindsight tools, retention, and other hooks remain upstream behavior. Accepted memory is visible in chat. Previously accepted history is not rewritten.
+The wrapper filters memory before Pi persists it. Hindsight tools and other hooks remain upstream behavior. Accepted memory is visible in chat. Previously accepted history is not rewritten.
 
 The semantic gate classifies whole original passages with native Google `gemini-decision-1`, then tries StartLux if Google fails. It does not rewrite facts. It requires relevance probability at least **0.9**, considers at most **20 candidates**, and retains at most **3 passages / 3,000 characters**, including framing. Rosters, no-history filler, unrelated passages, and instructions manipulating the gate are rejected. Structured passages stay whole rather than being truncated. Conservative filtering can reject useful facts; it is not a truth guarantee.
 
 All Google attempts share a five-second deadline. StartLux has a separate five-second deadline. A valid low score is final, not a reason to seek another model's approval. Both providers failing suppresses the injection. Candidate passages and task context are sent to the selected classifier providers. Native Google calls are not included in Pi's classifier usage totals.
+
+### Retention cadence
+
+Hindsight's Pi extension retains the session after every agent run. The wrapper passes only every **10th** `agent_end` of a session to it (`RETAIN_EVERY` in `gated-hindsight.ts`). On `session_shutdown` (quit, reload, new, resume, fork) it passes the last skipped run first, then lets Hindsight's shutdown handler wait for that retain.
+
+No turns are dropped: each retain reads the whole session branch and sends everything since the previous retain. If Pi is killed without a shutdown event, up to nine runs stay unretained until the session is resumed and retained again. Hindsight waits at most 10 seconds for the retain request at shutdown.
 
 ### Optional account pooling
 

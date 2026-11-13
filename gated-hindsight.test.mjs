@@ -57,7 +57,7 @@ function host(probability = 0, announceAtLoad = true) {
 }
 const injection = { message: { customType: 'hindsight', content: MEMORY_PREAMBLE + 'A fact.\n</hindsight_memory>' } };
 
-test('wraps only before_agent_start; awaits upstream exactly once before classifying', async () => {
+test('gates before_agent_start; awaits upstream exactly once before classifying', async () => {
   const h = host();
   let calls = 0;
   let finish;
@@ -80,8 +80,6 @@ test('wraps only before_agent_start; awaits upstream exactly once before classif
     });
   };
   await registerGatedHindsight(h.api, upstream, '0.8.7');
-  assert.equal(h.handlers.get('agent_end'), end);
-  assert.equal(h.handlers.get('session_shutdown'), shutdown);
   assert.equal(h.registered[0], tool);
   const pending = h.handlers.get('before_agent_start')({ prompt: 'goal' }, h.ctx);
   assert.equal(calls, 1);
@@ -92,8 +90,55 @@ test('wraps only before_agent_start; awaits upstream exactly once before classif
   assert.equal(h.calls(), 1);
   assert.deepEqual(result, { systemPrompt: 'unchanged', unknown: { keep: true } });
   assert.equal(result.unknown, original.unknown);
-  assert.equal(await h.handlers.get('agent_end')(), 'retain');
   assert.equal(await h.handlers.get('session_shutdown')(), 'flush');
+});
+
+function cadenceHost() {
+  const h = host();
+  const seen = [];
+  return { h, seen, upstream: (pi) => {
+    pi.on('agent_end', (event, ctx) => { seen.push(['retain', event.run, ctx]); });
+    pi.on('session_shutdown', (event, ctx) => { seen.push(['shutdown', event.reason, ctx]); return 'flush'; });
+  } };
+}
+
+test('forwards every tenth agent_end to upstream retention', async () => {
+  const { h, seen, upstream } = cadenceHost();
+  await registerGatedHindsight(h.api, upstream, '0.8.7');
+  for (let run = 1; run <= 25; run++) await h.handlers.get('agent_end')({ run }, h.ctx);
+  assert.deepEqual(seen, [['retain', 10, h.ctx], ['retain', 20, h.ctx]]);
+});
+
+test('session_shutdown retains the last skipped run once, before upstream shutdown', async () => {
+  const { h, seen, upstream } = cadenceHost();
+  await registerGatedHindsight(h.api, upstream, '0.8.7');
+  for (let run = 1; run <= 3; run++) await h.handlers.get('agent_end')({ run }, h.ctx);
+  const closing = { ...h.ctx };
+  assert.equal(await h.handlers.get('session_shutdown')({ reason: 'quit' }, closing), 'flush');
+  assert.deepEqual(seen, [['retain', 3, closing], ['shutdown', 'quit', closing]]);
+  await h.handlers.get('session_shutdown')({ reason: 'quit' }, closing);
+  assert.equal(seen.filter(([kind]) => kind === 'retain').length, 1);
+});
+
+test('session_shutdown does not retain again when the last run was forwarded', async () => {
+  const { h, seen, upstream } = cadenceHost();
+  await registerGatedHindsight(h.api, upstream, '0.8.7');
+  for (let run = 1; run <= 10; run++) await h.handlers.get('agent_end')({ run }, h.ctx);
+  await h.handlers.get('session_shutdown')({ reason: 'new' }, h.ctx);
+  assert.deepEqual(seen, [['retain', 10, h.ctx], ['shutdown', 'new', h.ctx]]);
+});
+
+test('a failed shutdown retain still runs upstream shutdown and is reported', async () => {
+  const h = host();
+  const error = new Error('retain failure');
+  let shutdowns = 0;
+  await registerGatedHindsight(h.api, (pi) => {
+    pi.on('agent_end', () => { throw error; });
+    pi.on('session_shutdown', () => { shutdowns++; });
+  }, '0.8.7');
+  await h.handlers.get('agent_end')({}, h.ctx);
+  await assert.rejects(() => h.handlers.get('session_shutdown')({}, h.ctx), (actual) => actual === error);
+  assert.equal(shutdowns, 1);
 });
 
 test('preserves unrelated results and upstream exceptions without re-running the hook', async () => {
@@ -118,7 +163,7 @@ test('unsupported version suppresses injection but leaves tools and hooks regist
   assert.equal(await h.handlers.get('before_agent_start')({ prompt: 'goal' }, h.ctx), undefined);
   assert.equal(h.calls(), 0);
   assert.equal(h.registered.length, 1);
-  assert.equal(h.handlers.get('session_shutdown')(), 'done');
+  assert.equal(await h.handlers.get('session_shutdown')(), 'done');
 });
 
 test('default entry imports the absolute installed path under HOME unchanged', async (t) => {
@@ -209,10 +254,11 @@ test('installed 0.8.7 extension factory preserves tools, retention, shutdown and
     { type: 'custom_message', customType: 'hindsight', content: 'memory not retained as user' }];
   h.ctx.sessionManager.getBranch = () => branch;
   await h.handlers.get('agent_end')({ messages: [{ role: 'user', content: 'event only' }] }, h.ctx);
-  assert.deepEqual(calls.find((call) => Array.isArray(call) && call[0] === 'retain'),
-    ['retain', 'session', [{ role: 'user', content: 'earlier real user' }], true]);
+  assert.equal(calls.some((call) => Array.isArray(call) && call[0] === 'retain'), false);
   await h.handlers.get('session_shutdown')({}, h.ctx);
-  assert.ok(calls.includes('flush'));
+  assert.deepEqual(calls.filter((call) => Array.isArray(call) && call[0] === 'retain'),
+    [['retain', 'session', [{ role: 'user', content: 'earlier real user' }], true]]);
+  assert.equal(calls.indexOf('flush'), calls.findIndex((call) => Array.isArray(call) && call[0] === 'retain') + 1);
 
   for (const lead of [undefined, '(These pages matched the goal by search. Read one with hindsight_read_page(<id>) if it looks relevant.)']) {
     await t.test('actual page search/fallback roster skips classification', async () => {
