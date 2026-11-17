@@ -4,9 +4,14 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import test, { beforeEach } from 'node:test';
+import test, { after, beforeEach } from 'node:test';
 import { registerGatedHindsight } from './gated-hindsight.ts';
 import { MEMORY_PREAMBLE } from './relevance-gate.mjs';
+
+// Keep gate diagnostics out of the real ~/.hindsight log.
+const diagDir = fs.mkdtempSync(join(tmpdir(), 'gated-hindsight-diag-'));
+process.env.HINDSIGHT_DIAG_FILE = join(diagDir, 'diag.jsonl');
+after(() => fs.rmSync(diagDir, { recursive: true, force: true }));
 
 const nativeHosts = new Map();
 beforeEach((t) => {

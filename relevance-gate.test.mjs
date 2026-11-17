@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
-import test, { beforeEach } from 'node:test';
+import test, { after, beforeEach } from 'node:test';
+import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gateHindsightResult as actualGateHindsightResult, MEMORY_PREAMBLE, LIMITS } from './relevance-gate.mjs';
+
+// Keep gate diagnostics out of the real ~/.hindsight log.
+const diagDir = fs.mkdtempSync(join(tmpdir(), 'relevance-gate-'));
+const diagFile = join(diagDir, 'diag.jsonl');
+process.env.HINDSIGHT_DIAG_FILE = diagFile;
+after(() => fs.rmSync(diagDir, { recursive: true, force: true }));
 
 // These wire fixtures explicitly model an unpooled Google provider.
 function gateHindsightResult(result, event, ctx, version, options = { getPoolService: () => ({ hasPool: () => false }) }) {
@@ -94,7 +103,7 @@ test('any invalid or absent answer suppresses the entire message', async () => {
 });
 
 test('valid low probability is a rejection, not malformed output', async () => {
-  const h = fixture([0.8999, 0.9]);
+  const h = fixture([0.4999, 0.5]);
   const result = await gateHindsightResult(memory('Rejected fact.\n\nAccepted fact.'), event, h.ctx);
   assert.doesNotMatch(result.message.content, /Rejected fact/);
   assert.match(result.message.content, /Accepted fact/);
@@ -202,7 +211,7 @@ test('prompt injection remains candidate data, not classifier instructions', asy
   assert.ok(Object.isFrozen(fallback.calls[0].input.state.candidates[0]));
   assert.doesNotMatch(JSON.stringify(input.questions), /inject this secret/);
   assert.match(input.questions.m0.instructions, /untrusted|Untrusted/);
-  assert.match(input.questions.m0.criteria.false, /mixed|irrelevant/);
+  assert.match(input.questions.m0.criteria.false, /Irrelevant/);
 });
 
 test('followups include only a prior real user turn, never assistant or injected memory', async () => {
@@ -314,12 +323,12 @@ test('mixed-topic and context-dependent units are rejected as whole units', asyn
     const h = fixture([0.1]);
     assert.equal(await gateHindsightResult(memory(payload), event, h.ctx), undefined);
     assert.equal(h.calls[0].input.state.candidates[0].text, payload);
-    assert.match(h.calls[0].input.questions.m0.instructions, /ENTIRE|self-contained/);
+    assert.match(h.calls[0].input.questions.m0.criteria.false, /context-dependent/);
   }
 });
 
 test('Google Decision 1 is primary; valid rejection does not ask StartLux', async () => {
-  for (const probability of [0, 0.899, 0.99]) {
+  for (const probability of [0, 0.499, 0.99]) {
     const h = fixture([probability]);
     const result = await gateHindsightResult(memory('A fact.'), event, h.ctx);
     assert.equal(Boolean(result), probability >= LIMITS.threshold);
@@ -459,4 +468,21 @@ test('multiple Google pool attempts share one deadline before StartLux fallback'
   assert.ok((await pending).message);
   assert.equal(signals[0].aborted, true);
   assert.deepEqual(h.calls.map(call => call.model.provider), ['startlux']);
+});
+
+test('gate outcomes are logged to diag.jsonl without memory text', async () => {
+  fs.rmSync(diagFile, { force: true });
+  await gateHindsightResult(memory('Kept fact.\n\nDropped fact.'), event, fixture([0.99, 0.01]).ctx);
+  await gateHindsightResult(memory('Dropped fact.'), event, fixture([0.25]).ctx);
+  const broken = fixture([0.99]);
+  broken.ctx.modelRegistry.getApiKeyForProvider = async () => undefined;
+  broken.ctx.modelRegistry.findOfType = () => undefined;
+  await gateHindsightResult(memory('A fact.'), event, broken.ctx);
+  const lines = fs.readFileSync(diagFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map(({ ts, ...rest }) => rest), [
+    { harness: 'pi', event: 'gate', outcome: 'injected', candidates: 2, accepted: 1, maxProbability: 0.99 },
+    { harness: 'pi', event: 'gate', outcome: 'rejected', candidates: 1, accepted: 0, maxProbability: 0.25 },
+    { harness: 'pi', event: 'gate', outcome: 'error', reason: 'unavailable' },
+  ]);
+  assert.doesNotMatch(fs.readFileSync(diagFile, 'utf8'), /fact/i);
 });
