@@ -67,7 +67,7 @@ export async function createGateway({
     await rename(temporary, quotaPath);
   }).catch(() => log(JSON.stringify({ event: 'quota_state_save_failed' })));
   const reserved = { id: 'reserved', label: 'reserved', key: googleKey };
-  let pool = [], poolRead = -Infinity, poolError = false;
+  let pool = [], poolRead = -Infinity, poolError = false, turn = 0;
   const candidates = async role => {
     if (poolPath && now() - poolRead >= 60000) {
       poolRead = now();
@@ -81,7 +81,10 @@ export async function createGateway({
       }
     }
     // The reserved key serves queries first. Stored text uses it only when there is no pool.
-    return role === 'query' || !pool.length ? [reserved, ...pool] : pool;
+    if (role === 'query' || !pool.length) return [reserved, ...pool];
+    // Each stored-text batch starts at the next pool key, so load spreads across keys.
+    const start = turn++ % pool.length;
+    return [...pool.slice(start), ...pool.slice(0, start)];
   };
   await candidates('query');
   const google = async (operation, body, role, entry) => {

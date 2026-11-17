@@ -76,6 +76,11 @@ test('stored text uses pool keys and queries use the reserved key',async t=>{
  assert.deepEqual(s.logs.filter(x=>x.event==='passage_batch').map(x=>[x.key,x.status,x.inputs]),[['A',200,1]]);
  assert.deepEqual(s.logs.filter(x=>x.event==='query_embed').map(x=>[x.key,x.status,x.inputs]),[['reserved',200,1]]);
 });
+test('stored text rotates across pool keys, one upstream batch per key',async t=>{
+ const s=await pooled(t,{});
+ for(const at of [60000,60001,60002])assert.equal((await s.passage(at)).status,200);
+ assert.deepEqual(s.embeds(),['key-a','key-b','key-a']);
+});
 test('a capped key fails over, then all capped keys fail fast until the reported reset',async t=>{
  const down={'key-a':3600};const s=await pooled(t,down);
  assert.equal((await s.passage(60000)).status,200);
@@ -116,7 +121,7 @@ test('Hindsight startup embedding uses the reserved key once, only while the lea
  assert.equal((await s.passage(0)).status,200);
  await s.control('bootstrap');
  assert.equal((await s.passage(300001)).status,200);
- assert.deepEqual(s.embeds(),['real-google-key','key-a','key-a']);
+ assert.deepEqual(s.embeds(),['real-google-key','key-a','key-b']);
 });
 test('Hindsight startup embedding still works when every pool key is capped',async t=>{
  const s=await pooled(t,{'key-a':3600,'key-b':3600});
