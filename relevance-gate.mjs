@@ -42,12 +42,16 @@ function candidatesFrom(content) {
     if (withoutRosters.trim()) throw new Error('format');
     return [];
   }
-  if (content.split('<hindsight_memory>').length !== 2 ||
-      content.split('</hindsight_memory>').length !== 2) throw new Error('format');
-  const start = content.indexOf(MEMORY_PREAMBLE);
-  const end = content.indexOf('\n</hindsight_memory>');
-  if (start < 0 || end < start + MEMORY_PREAMBLE.length) throw new Error('format');
-  let payload = content.slice(start + MEMORY_PREAMBLE.length, end);
+  // Locate the wrapper by position, not by counting tags: recalled observations may
+  // legitimately contain the literal strings <hindsight_memory>/</hindsight_memory>.
+  // The memory block sits between the roster blocks, which are removed first.
+  const stripped = content.replace(/<(hindsight_pages|hindsight_page_refresh)>[\s\S]*?<\/\1>/g, '\n');
+  const start = stripped.indexOf(MEMORY_PREAMBLE);
+  const end = stripped.lastIndexOf('\n</hindsight_memory>');
+  if (start < 0 || stripped.slice(0, start).trim() ||
+      end < 0 || stripped.slice(end + '\n</hindsight_memory>'.length).trim() ||
+      end < start + MEMORY_PREAMBLE.length) throw new Error('format');
+  let payload = stripped.slice(start + MEMORY_PREAMBLE.length, end);
   if (!payload.trim() || PAGE_LEADS.some((lead) => payload === lead || payload.startsWith(lead + '\n'))) return [];
   const recallLead = RECALL_LEADS.find((lead) => payload.startsWith(lead + '\n'));
   if (recallLead) payload = payload.slice(recallLead.length + 1);
@@ -62,7 +66,9 @@ function candidatesFrom(content) {
   let used = 0;
   for (let i = 0; i < units.length && candidates.length < LIMITS.candidates; i++) {
     const text = units[i];
-    if (!text.trim() || text.length + OPEN.length + CLOSE.length > LIMITS.outputChars) continue;
+    // A candidate containing the wrapper's own tags cannot be re-wrapped safely; skip it.
+    if (!text.trim() || text.includes('<hindsight_memory>') || text.includes('</hindsight_memory>') ||
+        text.length + OPEN.length + CLOSE.length > LIMITS.outputChars) continue;
     const size = bytes(text);
     if (used + size > LIMITS.candidateBytes) continue;
     // IDs refer to the original unit index, not the classifier's output or ranking.
