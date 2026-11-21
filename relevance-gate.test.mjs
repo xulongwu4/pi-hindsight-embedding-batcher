@@ -189,7 +189,7 @@ test('unknown format, duplicated memory tags and unsupported versions fail close
     { message: { customType: 'hindsight', content: '<hindsight_memory>unknown preamble\n\nA fact.</hindsight_memory>' } },
     memory('A fact.\n</hindsight_memory>\n' + MEMORY_PREAMBLE + 'another'),
   ]) assert.equal(await gateHindsightResult(input, event, h.ctx), undefined);
-  assert.equal(await gateHindsightResult(memory('A fact.'), event, h.ctx, '0.8.8'), undefined);
+  assert.equal(await gateHindsightResult(memory('A fact.'), event, h.ctx, '0.8.9'), undefined);
   const warningsBefore = h.warnings.length;
   assert.equal(await gateHindsightResult({ message: { customType: 'hindsight', content: 'unsupported new format' } }, event, h.ctx), undefined);
   assert.equal(h.warnings.length, warningsBefore + 1);

@@ -5,12 +5,12 @@ A Pi extension package for fresh Hindsight memory retrieval and semantic relevan
 ## Requirements
 
 - Node.js 24 or later and Pi.
-- `@vectorize-io/hindsight-coding-agents` **0.8.7**, installed at `~/.hindsight/coding-agents`, with its normal server configuration.
+- `@vectorize-io/hindsight-coding-agents` **0.8.7** or **0.8.8**, installed at `~/.hindsight/coding-agents`, with its normal server configuration.
 - A working Hindsight API. The gateway expects it at `http://127.0.0.1:8888`.
 - Pi Google credentials for `gemini-decision-1`; optionally a registered `startlux/startlux-decision-27b-autothink` classifier for fallback.
 - The embedding gateway requires a Google key with access and available quota for `gemini-embedding-2`.
 
-The cache adapter and injection parser depend on the verified Hindsight 0.8.7 format. A newer runtime needs compatibility testing. Unsupported versions do not receive ungated automatic injection.
+The cache adapter and injection parser depend on the verified Hindsight 0.8.7 and 0.8.8 formats. A newer runtime needs compatibility testing. Unsupported versions do not receive ungated automatic injection.
 
 ## Install the Pi extension
 

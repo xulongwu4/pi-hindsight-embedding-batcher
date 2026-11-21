@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Private cache contract verified against @vectorize-io/hindsight-coding-agents 0.8.7.
+// Private cache contract verified against @vectorize-io/hindsight-coding-agents 0.8.7 and 0.8.8.
 // Load this entry point BEFORE Hindsight; the upstream hook still owns retrieval.
 export function registerPromptInjection(pi, {
   cacheRoot = join(tmpdir(), 'hindsight-pi'),
@@ -27,14 +27,14 @@ export function registerPromptInjection(pi, {
     let supported = false;
     try {
       const pkg = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
-      supported = pkg.name === '@vectorize-io/hindsight-coding-agents' && pkg.version === '0.8.7';
+      supported = pkg.name === '@vectorize-io/hindsight-coding-agents' && ['0.8.7', '0.8.8'].includes(pkg.version);
     } catch {
       // Missing or unreadable installation is also an unverified cache contract.
     }
     if (!supported) {
       if (!warnedVersion) {
         warnedVersion = true;
-        warning(ctx, 'Hindsight prompt refresh skipped: installed package is not verified 0.8.7.');
+        warning(ctx, 'Hindsight prompt refresh skipped: installed package is not verified 0.8.7 or 0.8.8.');
       }
       return;
     }

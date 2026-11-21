@@ -164,7 +164,7 @@ test('unsupported version suppresses injection but leaves tools and hooks regist
     pi.registerTool({ name: 'retain' });
     pi.on('before_agent_start', () => injection);
     pi.on('session_shutdown', () => 'done');
-  }, '0.8.8');
+  }, '0.8.9');
   assert.equal(await h.handlers.get('before_agent_start')({ prompt: 'goal' }, h.ctx), undefined);
   assert.equal(h.calls(), 0);
   assert.equal(h.registered.length, 1);
@@ -216,9 +216,10 @@ test('default entry imports the absolute installed path under HOME unchanged', a
 });
 
 // Expose existing functions from a temporary bundle copy, never modify the installation.
-test('installed 0.8.7 extension factory preserves tools, retention, shutdown and exact injection parsing', async (t) => {
+test('installed extension factory preserves tools, retention, shutdown and exact injection parsing', async (t) => {
   const installed = join(homedir(), '.hindsight/coding-agents');
-  assert.equal(JSON.parse(fs.readFileSync(join(installed, 'package.json'), 'utf8')).version, '0.8.7');
+  const version = JSON.parse(fs.readFileSync(join(installed, 'package.json'), 'utf8')).version;
+  assert.ok(['0.8.7', '0.8.8'].includes(version));
   const root = fs.mkdtempSync(join(tmpdir(), 'gated-hindsight-actual-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const saved = Object.fromEntries(['HOME', 'TMPDIR', 'HINDSIGHT_LOG_FILE', 'HINDSIGHT_DIAG_FILE']
@@ -246,7 +247,7 @@ test('installed 0.8.7 extension factory preserves tools, retention, shutdown and
     onTranscript: async (...args) => { calls.push(['retain', ...args]); },
     flush: async () => { calls.push('flush'); },
   };
-  await registerGatedHindsight(h.api, createPiExtension('pi', () => core), '0.8.7');
+  await registerGatedHindsight(h.api, createPiExtension('pi', () => core), version);
   await h.handlers.get('session_start')({}, h.ctx);
   const result = await h.handlers.get('before_agent_start')({ prompt: 'goal' }, h.ctx);
   assert.match(result.message.content, /A useful fact\./);

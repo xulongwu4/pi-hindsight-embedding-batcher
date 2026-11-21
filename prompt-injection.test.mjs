@@ -213,10 +213,10 @@ test('TypeScript entry point registers only the invalidator', async () => {
 });
 
 // Import a temporary copy with test-only named exports. Never patch the installation.
-test('installed Hindsight 0.8.7 hook regression', {
+test('installed Hindsight hook regression', {
   skip: !fs.existsSync(join(installedRoot, 'dist/pi.js')) && 'installed bundle unavailable',
 }, async (t) => {
-  assert.equal(JSON.parse(fs.readFileSync(join(installedRoot, 'package.json'), 'utf8')).version, '0.8.7');
+  assert.ok(['0.8.7', '0.8.8'].includes(JSON.parse(fs.readFileSync(join(installedRoot, 'package.json'), 'utf8')).version));
   const root = fs.mkdtempSync(join(tmpdir(), 'hindsight-actual-hook-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const originalEnv = Object.fromEntries(['TMPDIR', 'HINDSIGHT_LOG_FILE', 'HINDSIGHT_DIAG_FILE',

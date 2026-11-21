@@ -55,7 +55,7 @@ function candidatesFrom(content) {
   // Do not detach headers, list continuations, tables, quotes, or code from their context.
   // Structured documents are deliberately all-or-nothing, even at the cost of recall.
   const structured = /^(?: {0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\x60{3}|~{3}|[=-]{3,}\s*$)| {4}|\t)|\|/m.test(payload);
-  // 0.8.7 flattens each recalled observation into one complete bullet line.
+  // 0.8.7 and 0.8.8 flatten each recalled observation into one complete bullet line.
   const units = recallLead ? payload.split('\n') : structured ? [payload] : payload.split(/\n[ \t]*\n/);
   if (recallLead && units.some((unit) => !unit.startsWith('- '))) throw new Error('format');
   const candidates = [];
@@ -161,7 +161,7 @@ export async function gateHindsightResult(result, event, ctx, version = '0.8.7',
     } catch { /* Warning failures must not restore the ungated message. */ }
   };
   try {
-    if (version !== '0.8.7') throw new Error('version');
+    if (!['0.8.7', '0.8.8'].includes(version)) throw new Error('version');
     if (message.customType !== 'hindsight') return result;
     if (event?.messageType === 'custom' || typeof event?.prompt !== 'string' ||
         !event.prompt.trim() || bytes(event.prompt) > LIMITS.promptBytes) return suppressed;
